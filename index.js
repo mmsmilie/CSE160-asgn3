@@ -1,31 +1,43 @@
-import { initShaders } from "/cuon-utils.js";
-import { Matrix4 } from "/cuon-matrix.js";
+import { initShaders } from "./cuon-utils.js";
+import { Matrix4 } from "./cuon-matrix.js";
+import { Camera } from "./camera.js";
 import Stats from 'https://cdnjs.cloudflare.com/ajax/libs/stats.js/17/Stats.js'
 
 // Vertex shader program
 const VSHADER_SOURCE = `
   precision mediump float;
-  attribute vec2 a_Position;
-  attribute vec2 a_UV
+  attribute vec4 a_Position;
+  attribute vec2 a_UV; // Add declaration for UV attribute
   uniform mat4 u_ModelMatrix;
-  uniform mat4 u_RotationMatrix;
   uniform mat4 u_ViewMatrix;
   uniform mat4 u_ProjectionMatrix;
+  uniform mat4 u_rotateMatrix;
+  varying vec2 v_UV;
   void main() {
-    gl_Position = u_ProjectionMatrix * u_ViewMatrix * u_RotationMatrix * u_ModelMatrix * vec4(aPosition, 0.0, 1.0);
-    // v_UV = a_UV;
+    gl_Position = u_ProjectionMatrix * u_ViewMatrix *u_rotateMatrix * u_ModelMatrix * a_Position;
+    v_UV = a_UV;
   }
-  `;
+`;
 
 // Fragment shader program
 const FSHADER_SOURCE = `
   precision mediump float;
   varying vec2 v_UV;
-  uniform vec4 u_FragColor;
+  uniform vec4 u_FragColor;         // Base color
+  uniform float u_textColorWeight;  // Weight for the texture color
+  uniform float u_TextureChoose;
+  uniform sampler2D u_Sampler0;     // Dirt
+  uniform sampler2D u_Sampler1;     // Grass
+  uniform sampler2D u_Sampler2;     // Sky
   void main() {
-    gl_FragColor = u_FragColor;
-    // gl_FragColor = vec4(v_UV, 0.0, 1.0);
-  }`;
+      vec4 grassColor = texture2D(u_Sampler1, v_UV);
+      vec4 skyColor = texture2D(u_Sampler2, v_UV);
+
+      vec4 textureColor = mix(grassColor, skyColor, u_TextureChoose);
+  
+      gl_FragColor = mix(u_FragColor, textureColor, u_textColorWeight); // Interpolate between base color and texture color based on weight
+  }
+`;
 
 // Global Variables
 let canvas;
@@ -37,52 +49,38 @@ let u_Size;
 let u_ModelMatrix;
 let u_ProjectionMatrix;
 let u_ViewMatrix;
-let u_RotationMatrix;
+let u_rotateMatrix;
+let u_textColorWeight;
+let u_TextureChoose;
 
-let g_globalAngle = 0.0;
-let g_globalAngleX = 0.0;
-let g_globalAngleY = 0.0;
+let camera;
 
-let g_torsoAngle = 0.0;
+let rotateAngle = 0;
 
-let g_UpperRightArmAngle = 0.0;
-let g_LowerRightArmAngle = 0.0;
-
-let g_UpperLeftArmAngle = 0.0;
-let g_LowerLeftArmAngle = 0.0;
-
-let g_UpperRightLegAngle = 0.0;
-let g_LowerRightLegAngle = 0.0;
-
-let g_UpperLeftLegAngle = 0.0;
-let g_LowerLeftLegAngle = 0.0;
-
-let g_RFootAngle = 0.0;
-let g_LFootAngle = 0.0;
-
-let g_headAngle = 0.0;
-
-let g_speed = 1000.0;
-
-let mousemoveCanvas = false;
-let animate = false;
-let specialAnimate = false;
-
-var stats = new Stats();
-
-var shiftHeld = false;
-var tabPressed = false;
-
+let stats = new Stats();
 stats.dom.style.left = "auto";
 stats.dom.style.right = 0;
 stats.showPanel(0); // 0: fps, 1: ms, 2: mb, 3+: custom
 document.body.appendChild(stats.dom);
 
-// Colors
-var black = [0.0, 0.0, 0.0, 1.0];
-var brown = [0.607, 0.403, 0.243, 1.0];
-var navy = [0.0, 0.0, 0.5, 1.0];
-var light_green = [144/255, 238/255, 144/255, 1.0];
+let wHeld = false;
+let aHeld = false;
+let sHeld = false;
+let dHeld = false;
+let qHeld = false;
+let eHeld = false;
+
+let texture;
+let texture1;
+let texture2;
+
+let u_Sampler0;
+let u_Sampler1;
+let u_Sampler2;
+
+let tex0Loaded = false;
+let tex1Loaded = false;
+let tex2Loaded = false;
 
 function setupWebGL(){
   // Retrieve <canvas> element
@@ -108,563 +106,246 @@ function connectVariablesToGLSL(){
   u_ModelMatrix = gl.getUniformLocation(gl.program, "u_ModelMatrix");
   u_ProjectionMatrix = gl.getUniformLocation(gl.program, "u_ProjectionMatrix");
   u_ViewMatrix = gl.getUniformLocation(gl.program, "u_ViewMatrix");
-  u_RotationMatrix = gl.getUniformLocation(gl.program, "u_RotationMatrix");
-
-  if(a_Position < 0 || a_UV < 0 || u_FragColor < 0 || u_Size < 0 || u_ModelMatrix < 0 || u_ProjectionMatrix < 0 || u_ViewMatrix < 0 || u_RotationMatrix < 0){
+  u_rotateMatrix = gl.getUniformLocation(gl.program, "u_rotateMatrix");
+  u_textColorWeight = gl.getUniformLocation(gl.program, "u_textColorWeight");
+  u_TextureChoose = gl.getUniformLocation(gl.program, "u_TextureChoose");
+  if(a_Position < 0 || a_UV < 0 || u_FragColor < 0 || u_Size < 0 || u_ModelMatrix < 0 || u_ProjectionMatrix < 0 || u_ViewMatrix < 0){
     console.log("Failed to get the storage location of attribute or uniform variable");
   }
 }
 
 function addActionsFromHTML() {
-
-  canvas.addEventListener("mousedown", function(ev) {
-    mousemoveCanvas = true;
-  })
-
-  canvas.addEventListener("mouseup", function(ev) {
-    mousemoveCanvas = false;
-  })
-
-  canvas.addEventListener("mousemove", function(ev) {
-    if (mousemoveCanvas) {
-      g_globalAngleX = ev.clientX - canvas.width / 2;
-      g_globalAngleY = ev.clientY - canvas.height / 2;
-      renderScene();
-    }
-  })
-
-  document.getElementById("angleSlide").addEventListener("mousemove", function() { 
-    g_globalAngle = this.value;
-    renderScene();
-  })
-
-  document.getElementById("RUASlide").addEventListener("mousemove", function() {
-    g_UpperRightArmAngle = this.value;
-    renderScene();
-  })
-
-  document.getElementById("RLAslide").addEventListener("mousemove", function() {
-    g_LowerRightArmAngle = this.value;
-    renderScene();
-  })
-
-  document.getElementById("LUASlide").addEventListener("mousemove", function() {
-    g_UpperLeftArmAngle = this.value;
-    renderScene();
-  })
-
-  document.getElementById("LLAslide").addEventListener("mousemove", function() {
-    g_LowerLeftArmAngle = this.value;
-    renderScene();
-  })
-
-  document.getElementById("torsoSlide").addEventListener("mousemove", function() {
-    g_torsoAngle = this.value;
-    renderScene();
-  })
-
-  document.getElementById("RULSlide").addEventListener("mousemove", function() {
-    g_UpperRightLegAngle = this.value;
-    renderScene();
-  })
-
-  document.getElementById("RLLSlide").addEventListener("mousemove", function() {
-    g_LowerRightLegAngle = this.value;
-    renderScene();
-  })
-
-  document.getElementById("LULSlide").addEventListener("mousemove", function() {
-    g_UpperLeftLegAngle = this.value;
-    renderScene();
-  })
-
-  document.getElementById("LLLSlide").addEventListener("mousemove", function() {
-    g_LowerLeftLegAngle = this.value;
-    renderScene();
-  })
-
-  document.getElementById("headSlide").addEventListener("mousemove", function() {
-    g_headAngle = this.value;
-    renderScene();
-  })
-
-  document.getElementById("animateButtonYes").addEventListener("click", function() {
-    animate = true;
-    specialAnimate = false;
-    renderScene();
-  })
-
-  document.getElementById("animateButtonNo").addEventListener("click", function() {
-    animate = false;
-    specialAnimate = false;
-    renderScene();
-  })
-
-  document.getElementById("RFOOTSlide").addEventListener("mousemove", function() {
-    g_RFootAngle = this.value;
-    renderScene();
-  })
-
-  document.getElementById("LFOOTSlide").addEventListener("mousemove", function() {
-    g_LFootAngle = this.value;
-    renderScene();
-  })
-
-  document.getElementById("speedSlide").addEventListener("mousemove", function() {
-    g_speed = this.value;
-    renderScene();
-  })
-
-  // Get Shift Tab Click to work
-
-  canvas.addEventListener('keydown', function(event) {
-    if (event.key === "Shift") {
-        shiftHeld = true;
-    }
-    if (event.key === "Tab") {
-        tabPressed = true;
-        event.preventDefault();  // Prevent the default shift-tab behavior
+  document.addEventListener('keydown', function(event) {
+    //console.log("Keydown: " + event.key);
+    switch (event.key) {
+      case "w": wHeld = true; break;
+      case "s": sHeld = true; break;
+      case "a": aHeld = true; break;
+      case "d": dHeld = true; break;
+      case "q": qHeld = true; break;
+      case "e": eHeld = true; break;
     }
   });
 
-  canvas.addEventListener('keyup', function(event) {
-    if (event.key === "Shift") {
-        shiftHeld = false;
+  document.addEventListener('keyup', function(event) {
+    switch (event.key) {
+      case "w": wHeld = false; break;
+      case "s": sHeld = false; break;
+      case "a": aHeld = false; break;
+      case "d": dHeld = false; break;
+      case "q": qHeld = false; break;
+      case "e": eHeld = false; break;
     }
-    if (event.key === "Tab") {
-        tabPressed = false;
-    }
-  });
-
-  canvas.addEventListener('click', function(event) {
-      if (shiftHeld && tabPressed) {
-          console.log('Shift+Tab and click!');
-          specialAnimate = true;
-          animate = true;
-      }
   });
 }
 
-function renderScene() {
+function initTextures() {
+  texture = gl.createTexture();
+  texture1 = gl.createTexture();
+  texture2 = gl.createTexture();
 
-  //console.log("Rendering...");
+  var u_Sampler0 = gl.getUniformLocation(gl.program, "u_Sampler0");
+  var u_Sampler1 = gl.getUniformLocation(gl.program, "u_Sampler1");
+  var u_Sampler2 = gl.getUniformLocation(gl.program, "u_Sampler2");
 
-  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  var image1 = new Image();
+  var image2 = new Image();
+  var image3 = new Image();
 
-  var globalRot = new Matrix4().rotate(g_globalAngle,0,1,0).rotate(-g_globalAngleY,1,0,0).rotate(-g_globalAngleX,0,1,0);
-  gl.uniformMatrix4fv(u_RotationMatrix, false, globalRot.elements);
+  image1.onload = function() { loadTexture(texture, u_Sampler0, image1,0); };
+  image2.onload = function() { loadTexture(texture1, u_Sampler1, image2,1); };
+  image3.onload = function() { loadTexture(texture2, u_Sampler2, image3,2); };
 
-  if(animate){
-    if(specialAnimate){
-      drawSpecialAnimation();
-    }else{
-      drawAnimation();
-    }
-  }else{
-    drawBody();
+  image1.src = 'dirt.png';
+  image2.src = 'grass.png';
+  image3.src = 'Sky.jpg';
+
+  return true;
+}
+
+function loadTexture(texture, u_Sampler, image,texUnit) {
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 1);
+  if(texUnit == 0){
+    gl.activeTexture(gl.TEXTURE0);
+    tex0Loaded = true;
+  }else if(texUnit == 1){
+    gl.activeTexture(gl.TEXTURE1);
+    tex1Loaded = true;
+  }else if(texUnit == 2){
+    gl.activeTexture(gl.TEXTURE2);
+    tex2Loaded = true;
   }
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+
+  gl.uniform1i(u_Sampler, texUnit); // Bind the texture unit index to the sampler uniform
 }
 
-var g_startTime = performance.now()/g_speed;
-var g_seconds = performance.now()/g_speed - g_startTime;
+function drawSquare(identityMatrix,rgba,ratio,choice) {
+  //console.log(choice);
+  const vertices = new Float32Array([
+    // Vertex positions and UV coordinates
+    -0.5, -0.5, 0.0, 0.0, 0.0,
+     0.5, -0.5, 0.0, 1.0, 0.0,
+     0.5,  0.5, 0.0, 1.0, 1.0,
+    -0.5, -0.5, 0.0, 0.0, 0.0,
+     0.5,  0.5, 0.0, 1.0, 1.0,
+    -0.5,  0.5, 0.0, 0.0, 1.0,
+  ]);
 
-function tick() {
-  //console.log("Tick");
-  stats.begin();
-  g_seconds = performance.now()/g_speed - g_startTime;
-  renderScene();
-  stats.end();
-  requestAnimationFrame(tick);
-}
-
-function drawSpecialAnimation() {
-  console.log("Animating but special lol");
-  const identityMatrix = new Matrix4();
-  identityMatrix.translate(0,.3,0);
-
-  // Create Torso
-  var torso = new Matrix4(identityMatrix);
-  //torso.rotate(g_torsoAngle, 0, 1, 0);
-  torso.scale(1.5,1.8,0.8);
-  drawCube(torso, light_green);
-
-  // Create Head
-  var head = new Matrix4(torso).scale(0.666, 0.555, 1.25);
-  //head.rotate(g_headAngle,0,1,0);
-  head.rotate(5 * Math.sin(g_seconds), 0, 1, 0);
-  head.translate(0, 0.36, 0);
-  drawCube(head, brown);
-
-  // Create Hair
-  var hair = new Matrix4(head);
-  hair.translate(0,0.15,0);
-  hair.scale(1,0.2,1);
-  drawCube(hair, black);
-
-  // Create Upper Right Arm
-  var Rarm = new Matrix4(torso).scale(0.666, 0.555, 1.25).translate(0.25, 0.16, 0); // Make the pivot point at the shoulder and reset the scale system
-  //Rarm.rotate(g_UpperRightArmAngle, 1, 0, 0);
-  //Rarm.rotate(10 * Math.sin(g_seconds) +55, 1, 0, 0);
-  Rarm.rotate(65 * Math.abs(Math.sin(g_seconds)) + 89, 0, 0, 1);
-  Rarm.translate(0, -0.1, 0);
-  Rarm.scale(0.5, 1, 0.5);
-  drawCube(Rarm, light_green);
-
-  // Create Lower Right Arm
-  var LRam = new Matrix4(Rarm).scale(2,1,2).translate(0, -0.15, 0);
-  //LRam.rotate(g_LowerRightArmAngle, 1, 0, 0);
-  //LRam.rotate(10 * Math.sin(g_seconds) + 55, 1, 0, 0);
-  LRam.rotate(65 * Math.abs(Math.sin(g_seconds)), 0, 0, 1);
-  LRam.translate(0, -0.11, 0);
-  LRam.scale(0.5, 1, 0.5);
-  drawCube(LRam, brown);
-
-  // Create Upper Left Arm
-  var Rarm = new Matrix4(torso).scale(0.666, 0.555, 1.25).translate(-0.25, 0.16, 0); // Make the pivot point at the shoulder and reset the scale system
-  //Rarm.rotate(g_UpperLeftArmAngle, 1, 0, 0);
-  //Rarm.rotate(10 * Math.cos(g_seconds) + 55, 1, 0, 0);
-  Rarm.rotate(-65 * Math.abs(Math.sin(g_seconds)) - 89, 0, 0, 1);
-  Rarm.translate(0, -0.1, 0);
-  Rarm.scale(0.5, 1, 0.5);
-  drawCube(Rarm, light_green);
-
-  // Create Lower Left Arm
-  var LRam = new Matrix4(Rarm).scale(2,1,2).translate(0, -0.15, 0);
-  //LRam.rotate(g_LowerLeftArmAngle, 1, 0, 0);
-  //LRam.rotate(10 * Math.cos(g_seconds) + 55, 1, 0, 0);
-  LRam.rotate(-65 * Math.abs(Math.sin(g_seconds)), 0, 0, 1);
-  LRam.translate(0, -0.11, 0);
-  LRam.scale(0.5, 1, 0.5);
-  drawCube(LRam, brown);
-
-  // Create Upper Right Leg
-  var URLeg = new Matrix4(torso).scale(0.666, 0.555, 1.25).translate(0, -0.22, 0);
-  //URLeg.rotate(g_UpperRightLegAngle, 1, 0, 0);
-  //URLeg.rotate(10 * Math.sin(g_seconds) + 35, 1, 0, 0);
-  URLeg.rotate(45 * Math.abs(Math.sin(g_seconds)), 0, 0, 1);
-  URLeg.translate(0.1, -0.15, 0);
-  URLeg.scale(0.5, 1.15, 0.5);
-  drawCube(URLeg, navy);
-  
-  // Create Lower Right Leg
-  var LRLeg = new Matrix4(URLeg).scale(2,0.83,2).translate(0, -0.15, 0);
-  //LRLeg.rotate(-g_LowerRightLegAngle, 1, 0, 0);
-  //LRLeg.rotate(10 * Math.sin(g_seconds) - 35, 1, 0, 0);
-  LRLeg.translate(0, -0.15, 0);
-  LRLeg.scale(0.5, 1.1, 0.5);
-  drawCube(LRLeg, brown);
-
-  var RFoot = new Matrix4(LRLeg).scale(2,0.909,2);
-  //RFoot.rotate(g_RFootAngle, 1, 0, 0);
-  RFoot.translate(0, -0.17, 0);
-  RFoot.scale(0.5, 0.2, 0.5);
-  drawCube(RFoot, black);
-  
-  // Create Upper Left Leg
-  var URLeg = new Matrix4(torso).scale(0.666, 0.555, 1.25).translate(0, -0.22, 0);
-  //URLeg.rotate(g_UpperLeftLegAngle, 1, 0, 0);
-  //URLeg.rotate(10 * Math.cos(g_seconds) + 35, 1, 0, 0);
-  URLeg.rotate(-45 * Math.abs(Math.sin(g_seconds)), 0, 0, 1);
-  URLeg.translate(-0.1, -0.15, 0);
-  URLeg.scale(0.5, 1.15, 0.5);
-  drawCube(URLeg, navy);
-  
-  // Create Lower Left Leg
-  var LRLeg = new Matrix4(URLeg).scale(2,0.83,2).translate(0, -0.15, 0);
-  //LRLeg.rotate(-g_LowerLeftLegAngle, 1, 0, 0);
-  //LRLeg.rotate(10 * Math.cos(g_seconds) - 35, 1, 0, 0);
-  LRLeg.translate(0, -0.15, 0);
-  LRLeg.scale(0.5, 1.1, 0.5);
-  drawCube(LRLeg, brown);
-
-  var LFoot = new Matrix4(LRLeg).scale(2,0.909,2);
-  //LFoot.rotate(g_LFootAngle, 1, 0, 0);
-  LFoot.translate(0, -0.17, 0);
-  LFoot.scale(0.5, 0.2, 0.5);
-  drawCube(LFoot, black);
-}
-
-function drawAnimation() {
-  console.log("Animating");
-
-  const identityMatrix = new Matrix4();
-  identityMatrix.translate(0,.3,0);
-
-  // Create Torso
-  var torso = new Matrix4(identityMatrix);
-  //torso.rotate(g_torsoAngle, 0, 1, 0);
-  torso.scale(1.5,1.8,0.8);
-  drawCube(torso, light_green);
-
-  // Create Head
-  var head = new Matrix4(torso).scale(0.666, 0.555, 1.25);
-  //head.rotate(g_headAngle,0,1,0);
-  head.rotate(5 * Math.sin(g_seconds), 0, 1, 0);
-  head.translate(0, 0.36, 0);
-  drawCube(head, brown);
-
-  // Create Hair
-  var hair = new Matrix4(head);
-  hair.translate(0,0.15,0);
-  hair.scale(1,0.2,1);
-  drawCube(hair, black);
-
-  // Create Upper Right Arm
-  var Rarm = new Matrix4(torso).scale(0.666, 0.555, 1.25).translate(0.25, 0.16, 0); // Make the pivot point at the shoulder and reset the scale system
-  //Rarm.rotate(g_UpperRightArmAngle, 1, 0, 0);
-  Rarm.rotate(10 * Math.sin(g_seconds) +55, 1, 0, 0);
-  Rarm.translate(0, -0.1, 0);
-  Rarm.scale(0.5, 1, 0.5);
-  drawCube(Rarm, light_green);
-
-  // Create Lower Right Arm
-  var LRam = new Matrix4(Rarm).scale(2,1,2).translate(0, -0.15, 0);
-  //LRam.rotate(g_LowerRightArmAngle, 1, 0, 0);
-  LRam.rotate(10 * Math.sin(g_seconds) + 55, 1, 0, 0);
-  LRam.translate(0, -0.11, 0);
-  LRam.scale(0.5, 1, 0.5);
-  drawCube(LRam, brown);
-
-  // Create Upper Left Arm
-  var Rarm = new Matrix4(torso).scale(0.666, 0.555, 1.25).translate(-0.25, 0.16, 0); // Make the pivot point at the shoulder and reset the scale system
-  //Rarm.rotate(g_UpperLeftArmAngle, 1, 0, 0);
-  Rarm.rotate(10 * Math.cos(g_seconds) + 55, 1, 0, 0);
-  Rarm.translate(0, -0.1, 0);
-  Rarm.scale(0.5, 1, 0.5);
-  drawCube(Rarm, light_green);
-
-  // Create Lower Left Arm
-  var LRam = new Matrix4(Rarm).scale(2,1,2).translate(0, -0.15, 0);
-  //LRam.rotate(g_LowerLeftArmAngle, 1, 0, 0);
-  LRam.rotate(10 * Math.cos(g_seconds) + 55, 1, 0, 0);
-  LRam.translate(0, -0.11, 0);
-  LRam.scale(0.5, 1, 0.5);
-  drawCube(LRam, brown);
-
-  // Create Upper Right Leg
-  var URLeg = new Matrix4(torso).scale(0.666, 0.555, 1.25).translate(0, -0.22, 0);
-  //URLeg.rotate(g_UpperRightLegAngle, 1, 0, 0);
-  URLeg.rotate(10 * Math.sin(g_seconds) + 35, 1, 0, 0);
-  URLeg.translate(0.1, -0.15, 0);
-  URLeg.scale(0.5, 1.15, 0.5);
-  drawCube(URLeg, navy);
-  
-  // Create Lower Right Leg
-  var LRLeg = new Matrix4(URLeg).scale(2,0.83,2).translate(0, -0.15, 0);
-  //LRLeg.rotate(-g_LowerRightLegAngle, 1, 0, 0);
-  LRLeg.rotate(10 * Math.sin(g_seconds) - 35, 1, 0, 0);
-  LRLeg.translate(0, -0.15, 0);
-  LRLeg.scale(0.5, 1.1, 0.5);
-  drawCube(LRLeg, brown);
-
-  var RFoot = new Matrix4(LRLeg).scale(2,0.909,2);
-  //RFoot.rotate(g_RFootAngle, 1, 0, 0);
-  RFoot.translate(0, -0.17, 0);
-  RFoot.scale(0.5, 0.2, 0.5);
-  drawCube(RFoot, black);
-  
-  // Create Upper Left Leg
-  var URLeg = new Matrix4(torso).scale(0.666, 0.555, 1.25).translate(0, -0.22, 0);
-  //URLeg.rotate(g_UpperLeftLegAngle, 1, 0, 0);
-  URLeg.rotate(10 * Math.cos(g_seconds) + 35, 1, 0, 0);
-  URLeg.translate(-0.1, -0.15, 0);
-  URLeg.scale(0.5, 1.15, 0.5);
-  drawCube(URLeg, navy);
-  
-  // Create Lower Left Leg
-  var LRLeg = new Matrix4(URLeg).scale(2,0.83,2).translate(0, -0.15, 0);
-  //LRLeg.rotate(-g_LowerLeftLegAngle, 1, 0, 0);
-  LRLeg.rotate(10 * Math.cos(g_seconds) - 35, 1, 0, 0);
-  LRLeg.translate(0, -0.15, 0);
-  LRLeg.scale(0.5, 1.1, 0.5);
-  drawCube(LRLeg, brown);
-
-  var LFoot = new Matrix4(LRLeg).scale(2,0.909,2);
-  //LFoot.rotate(g_LFootAngle, 1, 0, 0);
-  LFoot.translate(0, -0.17, 0);
-  LFoot.scale(0.5, 0.2, 0.5);
-  drawCube(LFoot, black);
-}
-
-function drawBody(){
-  const identityMatrix = new Matrix4();
-  identityMatrix.translate(0,.3,0);
-
-  // Create Torso
-  var torso = new Matrix4(identityMatrix);
-  torso.rotate(g_torsoAngle, 0, 1, 0);
-  torso.scale(1.5,1.8,0.8);
-  drawCube(torso, light_green);
-
-  // Create Head
-  var head = new Matrix4(torso).scale(0.666, 0.555, 1.25);
-  head.rotate(g_headAngle,0,1,0);
-  head.translate(0, 0.36, 0);
-  drawCube(head, brown);
-
-  // Create Hair
-  var hair = new Matrix4(head);
-  hair.translate(0,0.15,0);
-  hair.scale(1,0.2,1);
-  drawCube(hair, black);
-
-  // Create Upper Right Arm
-  var Rarm = new Matrix4(torso).scale(0.666, 0.555, 1.25).translate(0.25, 0.16, 0); // Make the pivot point at the shoulder and reset the scale system
-  Rarm.rotate(g_UpperRightArmAngle, 1, 0, 0);
-  Rarm.translate(0, -0.1, 0);
-  Rarm.scale(0.5, 1, 0.5);
-  drawCube(Rarm, light_green);
-
-  // Create Lower Right Arm
-  var LRam = new Matrix4(Rarm).scale(2,1,2).translate(0, -0.15, 0);
-  LRam.rotate(g_LowerRightArmAngle, 1, 0, 0);
-  LRam.translate(0, -0.11, 0);
-  LRam.scale(0.5, 1, 0.5);
-  drawCube(LRam, brown);
-
-  // Create Upper Left Arm
-  var Rarm = new Matrix4(torso).scale(0.666, 0.555, 1.25).translate(-0.25, 0.16, 0); // Make the pivot point at the shoulder and reset the scale system
-  Rarm.rotate(g_UpperLeftArmAngle, 1, 0, 0);
-  Rarm.translate(0, -0.1, 0);
-  Rarm.scale(0.5, 1, 0.5);
-  drawCube(Rarm, light_green);
-
-  // Create Lower Left Arm
-  var LRam = new Matrix4(Rarm).scale(2,1,2).translate(0, -0.15, 0);
-  LRam.rotate(g_LowerLeftArmAngle, 1, 0, 0);
-  LRam.translate(0, -0.11, 0);
-  LRam.scale(0.5, 1, 0.5);
-  drawCube(LRam, brown);
-
-  // Create Upper Right Leg
-  var URLeg = new Matrix4(torso).scale(0.666, 0.555, 1.25).translate(0, -0.22, 0);
-  URLeg.rotate(g_UpperRightLegAngle, 1, 0, 0);
-  URLeg.translate(0.1, -0.15, 0);
-  URLeg.scale(0.5, 1.15, 0.5);
-  drawCube(URLeg, navy);
-  
-  // Create Lower Right Leg
-  var LRLeg = new Matrix4(URLeg).scale(2,0.83,2).translate(0, -0.15, 0);
-  LRLeg.rotate(-g_LowerRightLegAngle, 1, 0, 0);
-  LRLeg.translate(0, -0.15, 0);
-  LRLeg.scale(0.5, 1.1, 0.5);
-  drawCube(LRLeg, brown);
-
-  var RFoot = new Matrix4(LRLeg).scale(2,0.909,2);
-  RFoot.rotate(g_RFootAngle, 1, 0, 0);
-  RFoot.translate(0, -0.17, 0);
-  RFoot.scale(0.5, 0.2, 0.5);
-  drawCube(RFoot, black);
-  
-  // Create Upper Left Leg
-  var ULLeg = new Matrix4(torso).scale(0.666, 0.555, 1.25).translate(0, -0.22, 0);
-  ULLeg.rotate(g_UpperLeftLegAngle, 1, 0, 0);
-  ULLeg.translate(-0.1, -0.15, 0);
-  ULLeg.scale(0.5, 1.15, 0.5);
-  drawCube(ULLeg, navy);
-  
-  // Create Lower Left Leg
-  var LRLeg = new Matrix4(ULLeg).scale(2,0.83,2).translate(0, -0.15, 0);
-  LRLeg.rotate(-g_LowerLeftLegAngle, 1, 0, 0);
-
-  LRLeg.translate(0, -0.15, 0);
-  LRLeg.scale(0.5, 1.1, 0.5);
-  drawCube(LRLeg, brown);
-
-  var LFoot = new Matrix4(LRLeg).scale(2,0.909,2);
-  LFoot.rotate(g_LFootAngle, 1, 0, 0);
-  LFoot.translate(0, -0.17, 0);
-  LFoot.scale(0.5, 0.2, 0.5);
-  drawCube(LFoot, black);
-}
-
-function drawSquare(identityMatrix,rgba) {
-  
   gl.uniform4f(u_FragColor, rgba[0], rgba[1], rgba[2], rgba[3]);
-
-  const SM1 = new Matrix4();
+  gl.uniform1f(u_textColorWeight, ratio);
+  gl.uniform1f(u_TextureChoose, choice);
   
+  const vertexBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+  
+  const FSIZE = vertices.BYTES_PER_ELEMENT;
+
+  gl.vertexAttribPointer(a_Position, 3, gl.FLOAT, false, 5 * FSIZE, 0);
+  gl.enableVertexAttribArray(a_Position);
+  
+  gl.vertexAttribPointer(a_UV, 2, gl.FLOAT, false, 5 * FSIZE, 3 * FSIZE); // Set up UV attribute pointer
+  gl.enableVertexAttribArray(a_UV);
+  
+  const SM1 = new Matrix4();
   SM1.set(identityMatrix);
   SM1.translate(0, 0, 0);
   SM1.rotate(180, 0, 0, 1);
   SM1.scale(0.25, 0.25, 0.25);
 
   gl.uniformMatrix4fv(u_ModelMatrix, false, SM1.elements);
-  gl.drawArrays(gl.TRIANGLES, 0, 3);
-
-  SM1.set(identityMatrix); // Reset Coord System
-  SM1.translate(0, 0, 0);
-  SM1.rotate(0, 0, 0, 1);
-  SM1.scale(0.25, 0.25, 0.25);
-
-  gl.uniformMatrix4fv(u_ModelMatrix, false, SM1.elements);
-  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
 }
 
-function drawCube(identityMatrix,rgba) {
+function drawCube(identityMatrix,rgba,ratio,choice) {
+  
+  var texid = choice;
+
   const M1 = new Matrix4(identityMatrix);
 
   // Draw Front Face
-  rgba[3] = 1;
   M1.translate(0, 0, 0.125);  // Move forward in the z-axis
-  drawSquare(M1,rgba);
+  drawSquare(M1,rgba,ratio,texid);
 
   // Draw Back Face
-  rgba[3]= 0.9;
   M1.set(identityMatrix);
   M1.translate(0, 0, -0.125);  // Move back in the z-axis
-  drawSquare(M1,rgba);
+  drawSquare(M1,rgba,ratio,texid);
 
   // Draw Top Face
-  rgba[3]= 0.8;
   M1.set(identityMatrix);
   M1.rotate(-90, 1, 0, 0);  // Rotate 90 degrees around the x-axis
   M1.translate(0, 0, 0.125);  // Move up in the z-axis
-  drawSquare(M1,rgba);
+  drawSquare(M1,rgba,ratio,texid);
 
   // Draw Bottom Face
-  rgba[3]= 0.8;
   M1.set(identityMatrix);
   M1.rotate(90, 1, 0, 0);  // Rotate -90 degrees around the x-axis
   M1.translate(0, 0, 0.125);  // Move down in the z-axis
-  drawSquare(M1,rgba);
+  drawSquare(M1,rgba,ratio,texid);
 
   // Draw Left Face
-  rgba[3]= 0.9;
   M1.set(identityMatrix);
   M1.rotate(-90, 0, 1, 0);  // Rotate 90 degrees around the y-axis
   M1.translate(0, 0, 0.125);  // Move left in the z-axis
-  drawSquare(M1,rgba);
+  drawSquare(M1,rgba,ratio,texid);
 
   // Draw Right Face
-  rgba[3]= 1;
   M1.set(identityMatrix);
   M1.rotate(90, 0, 1, 0);  // Rotate -90 degrees around the y-axis
   M1.translate(0, 0, 0.125);  // Move right in the z-axis
-  drawSquare(M1,rgba);
+  drawSquare(M1,rgba,ratio,texid);
 
 }
 
-function main(){
+function controls() {
+  if(wHeld) {
+    camera.moveForward();
+  }
 
+  if(aHeld) {
+    camera.moveLeft();
+  }
+
+  if(sHeld) {
+    camera.moveBackward();
+  }
+
+  if(dHeld) {
+    camera.moveRight();
+  }
+
+  if(qHeld) {
+    camera.panLeft();
+  }
+
+  if(eHeld) {
+    camera.panRight();
+  }
+}
+
+function renderScene() {
+
+  //console.log(wHeld, aHeld, sHeld, dHeld, qHeld, eHeld);
+
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+  controls();
+
+  gl.uniformMatrix4fv(u_ProjectionMatrix, false, camera.projectionMatrix.elements);
+  //console.log("Camera Projection: " + camera.projectionMatrix);
+  gl.uniformMatrix4fv(u_ViewMatrix, false, camera.viewMatrix.elements);
+  //console.log("Camera View: " + camera.viewMatrix);
+  var globalRot = new Matrix4().rotate(rotateAngle, 0, 1, 0);
+  gl.uniformMatrix4fv(u_rotateMatrix, false, globalRot.elements);
+
+  var rgba = [0, 0, 0.5, 1.0];
+
+  if(tex0Loaded && tex1Loaded && tex2Loaded){
+    var ground = new Matrix4();
+    ground.translate(0,-0.35,0.50);
+    ground.scale(8,0.1,8);
+    drawCube(ground,rgba,1,0);
+
+    var sky = new Matrix4();
+    sky.scale(80,80,80);
+    drawCube(sky,rgba,1,1);
+  }
+}
+
+function tick() {
+  //console.log("Tick");
+  stats.begin();
+  renderScene();
+  stats.end();
+  requestAnimationFrame(tick);
+}
+
+function main() {
   setupWebGL();
   connectVariablesToGLSL();
   addActionsFromHTML();
 
+  camera = new Camera(canvas);
+
+  document.getElementById('slider').addEventListener('mousemove', function(e) {
+    rotateAngle = e.target.value;
+  })
+
   // Set clear color
-  gl.clearColor(200, 200, 200, 1.0);
+  gl.clearColor(0.5, 0.5, 0.5, 1.0);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-  gl.clear(gl.COLOR_BUFFER_BIT);
-
-  const vertices = new Float32Array([-0.5, -0.5, 0.5, -0.5, -0.5, 0.5]);
-
-  const vertexBuffer = gl.createBuffer();
-  if (!vertexBuffer) {
-    console.log("Failed to create the buffer object");
+  // Initialize textures
+  if (!initTextures()) {
+    console.error('Failed to initialize textures.');
+    return;
   }
-
-  gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
 
   gl.vertexAttribPointer(a_Position, 2, gl.FLOAT, false, 0, 0);
   gl.enableVertexAttribArray(a_Position);
@@ -672,5 +353,6 @@ function main(){
 
   requestAnimationFrame(tick);
 }
+
 
 main();
