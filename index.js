@@ -314,7 +314,7 @@ function renderScene() {
 
     var sky = new Matrix4();
     sky.scale(80,80,80);
-    drawCube(sky,rgba,1,1);
+    drawCube(sky,rgba,0.6,1);
   }
 }
 
